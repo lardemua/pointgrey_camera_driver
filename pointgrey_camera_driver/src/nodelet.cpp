@@ -15,8 +15,6 @@ Neither the name of the Carnegie Mellon University nor the names of its contribu
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-
-
 /**
    @file nodelet.cpp
    @author Chad Rockey
@@ -35,9 +33,9 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 #include "pointgrey_camera_driver/PointGreyCamera.h" // The actual standalone library for the PointGreys
 
-#include <image_transport/image_transport.h> // ROS library that allows sending compressed images
+#include <image_transport/image_transport.h>         // ROS library that allows sending compressed images
 #include <camera_info_manager/camera_info_manager.h> // ROS library that publishes CameraInfo topics
-#include <sensor_msgs/CameraInfo.h> // ROS message header for CameraInfo
+#include <sensor_msgs/CameraInfo.h>                  // ROS message header for CameraInfo
 
 #include <wfov_camera_msgs/WFOVImage.h>
 #include <image_exposure_msgs/ExposureSequence.h> // Message type for configuring gain and white balance.
@@ -259,9 +257,10 @@ private:
     pnh.param<int>("packet_size", packet_size_, 1400);
     pnh.param<bool>("auto_packet_size", auto_packet_size_, true);
     pnh.param<int>("packet_delay", packet_delay_, 4000);
+    pnh.param<bool>("packet_resend", packet_resend_, true);
 
     // Set GigE parameters:
-    pg_.setGigEParameters(auto_packet_size_, packet_size_, packet_delay_);
+    pg_.setGigEParameters(auto_packet_size_, packet_size_, packet_delay_, packet_resend_);
 
     // Get the location of our camera config yaml
     std::string camera_info_url;
@@ -340,7 +339,6 @@ private:
     return 0;
   }
 
-
   /*!
   * \brief Function for the boost::thread to grabImages and publish them.
   *
@@ -367,7 +365,7 @@ private:
 
       previous_state = state;
 
-      switch(state)
+      switch (state)
       {
         case ERROR:
           // Generally there's no need to stop before disconnecting after an
@@ -385,8 +383,8 @@ private:
             pg_.stop();
             NODELET_INFO("Stopped camera.");
 
-            state = STOPPED;
-          }
+          state = STOPPED;
+        }
           catch(std::runtime_error& e)
           {
             NODELET_ERROR_COND(state_changed,
@@ -394,149 +392,149 @@ private:
             ros::Duration(1.0).sleep(); // sleep for one second each time
           }
 
-          break;
+        break;
 #endif
-        case STOPPED:
-          // Try disconnecting from the camera
+      case STOPPED:
+        // Try disconnecting from the camera
+        try
+        {
+          NODELET_DEBUG("Disconnecting from camera.");
+          pg_.disconnect();
+          NODELET_INFO("Disconnected from camera.");
+
+          state = DISCONNECTED;
+        }
+        catch (std::runtime_error &e)
+        {
+          NODELET_ERROR_COND(state_changed,
+                             "Failed to disconnect with error: %s", e.what());
+          ros::Duration(1.0).sleep(); // sleep for one second each time
+        }
+
+        break;
+      case DISCONNECTED:
+        // Try connecting to the camera
+        try
+        {
+          NODELET_DEBUG("Connecting to camera.");
+          pg_.connect();
+          NODELET_INFO("Connected to camera.");
+
+          // Set last configuration, forcing the reconfigure level to stop
+          pg_.setNewConfiguration(config_, PointGreyCamera::LEVEL_RECONFIGURE_STOP);
+
+          // Set the timeout for grabbing images.
           try
           {
-            NODELET_DEBUG("Disconnecting from camera.");
-            pg_.disconnect();
-            NODELET_INFO("Disconnected from camera.");
+            double timeout;
+            getMTPrivateNodeHandle().param("timeout", timeout, 1.0);
 
-            state = DISCONNECTED;
+            NODELET_DEBUG("Setting timeout to: %f.", timeout);
+            pg_.setTimeout(timeout);
           }
-          catch(std::runtime_error& e)
-          {
-            NODELET_ERROR_COND(state_changed,
-                "Failed to disconnect with error: %s", e.what());
-            ros::Duration(1.0).sleep(); // sleep for one second each time
-          }
-
-          break;
-        case DISCONNECTED:
-          // Try connecting to the camera
-          try
-          {
-            NODELET_DEBUG("Connecting to camera.");
-            pg_.connect();
-            NODELET_INFO("Connected to camera.");
-
-            // Set last configuration, forcing the reconfigure level to stop
-            pg_.setNewConfiguration(config_, PointGreyCamera::LEVEL_RECONFIGURE_STOP);
-
-            // Set the timeout for grabbing images.
-            try
-            {
-              double timeout;
-              getMTPrivateNodeHandle().param("timeout", timeout, 1.0);
-
-              NODELET_DEBUG("Setting timeout to: %f.", timeout);
-              pg_.setTimeout(timeout);
-            }
-            catch(std::runtime_error& e)
-            {
-              NODELET_ERROR("%s", e.what());
-            }
-
-            // Subscribe to gain and white balance changes
-            {
-              boost::mutex::scoped_lock scopedLock(connect_mutex_);
-              sub_ = getMTNodeHandle().subscribe("image_exposure_sequence", 10, &pointgrey_camera_driver::PointGreyCameraNodelet::gainWBCallback, this);
-            }
-
-            state = CONNECTED;
-          }
-          catch(std::runtime_error& e)
-          {
-            NODELET_ERROR_COND(state_changed,
-                "Failed to connect with error: %s", e.what());
-            ros::Duration(1.0).sleep(); // sleep for one second each time
-          }
-
-          break;
-        case CONNECTED:
-          // Try starting the camera
-          try
-          {
-            NODELET_DEBUG("Starting camera.");
-            pg_.start();
-            NODELET_INFO("Started camera.");
-            NODELET_INFO("Attention: if nothing subscribes to the camera topic, the camera_info is not published on the correspondent topic.");
-            state = STARTED;
-          }
-          catch(std::runtime_error& e)
-          {
-            NODELET_ERROR_COND(state_changed,
-                "Failed to start with error: %s", e.what());
-            ros::Duration(1.0).sleep(); // sleep for one second each time
-          }
-
-          break;
-        case STARTED:
-          try
-          {
-            wfov_camera_msgs::WFOVImagePtr wfov_image(new wfov_camera_msgs::WFOVImage);
-            // Get the image from the camera library
-            NODELET_DEBUG("Starting a new grab from camera.");
-            pg_.grabImage(wfov_image->image, frame_id_);
-
-            // Set other values
-            wfov_image->header.frame_id = frame_id_;
-
-            wfov_image->gain = gain_;
-            wfov_image->white_balance_blue = wb_blue_;
-            wfov_image->white_balance_red = wb_red_;
-
-            wfov_image->temperature = pg_.getCameraTemperature();
-
-            ros::Time time = ros::Time::now();
-            wfov_image->header.stamp = time;
-            wfov_image->image.header.stamp = time;
-
-            // Set the CameraInfo message
-            ci_.reset(new sensor_msgs::CameraInfo(cinfo_->getCameraInfo()));
-            ci_->header.stamp = wfov_image->image.header.stamp;
-            ci_->header.frame_id = wfov_image->header.frame_id;
-            // The height, width, distortion model, and parameters are all filled in by camera info manager.
-            ci_->binning_x = binning_x_;
-            ci_->binning_y = binning_y_;
-            ci_->roi.x_offset = roi_x_offset_;
-            ci_->roi.y_offset = roi_y_offset_;
-            ci_->roi.height = roi_height_;
-            ci_->roi.width = roi_width_;
-            ci_->roi.do_rectify = do_rectify_;
-
-            wfov_image->info = *ci_;
-
-            // Publish the full message
-            pub_->publish(wfov_image);
-
-            // Publish the message using standard image transport
-            if(it_pub_.getNumSubscribers() > 0)
-            {
-              sensor_msgs::ImagePtr image(new sensor_msgs::Image(wfov_image->image));
-              it_pub_.publish(image, ci_);
-            }
-          }
-          catch(CameraTimeoutException& e)
-          {
-            NODELET_WARN("%s", e.what());
-          }
-          catch(CameraImageConsistencyError& e)
-          {
-            NODELET_WARN("%s", e.what());
-          }
-          catch(std::runtime_error& e)
+          catch (std::runtime_error &e)
           {
             NODELET_ERROR("%s", e.what());
-
-            state = ERROR;
           }
 
-          break;
-        default:
-          NODELET_ERROR("Unknown camera state %d!", state);
+          // Subscribe to gain and white balance changes
+          {
+            boost::mutex::scoped_lock scopedLock(connect_mutex_);
+            sub_ = getMTNodeHandle().subscribe("image_exposure_sequence", 10, &pointgrey_camera_driver::PointGreyCameraNodelet::gainWBCallback, this);
+          }
+
+          state = CONNECTED;
+        }
+        catch (std::runtime_error &e)
+        {
+          NODELET_ERROR_COND(state_changed,
+                             "Failed to connect with error: %s", e.what());
+          ros::Duration(1.0).sleep(); // sleep for one second each time
+        }
+
+        break;
+      case CONNECTED:
+        // Try starting the camera
+        try
+        {
+          NODELET_DEBUG("Starting camera.");
+          pg_.start();
+          NODELET_INFO("Started camera.");
+          NODELET_INFO("Attention: if nothing subscribes to the camera topic, the camera_info is not published on the correspondent topic.");
+          state = STARTED;
+        }
+        catch (std::runtime_error &e)
+        {
+          NODELET_ERROR_COND(state_changed,
+                             "Failed to start with error: %s", e.what());
+          ros::Duration(1.0).sleep(); // sleep for one second each time
+        }
+
+        break;
+      case STARTED:
+        try
+        {
+          wfov_camera_msgs::WFOVImagePtr wfov_image(new wfov_camera_msgs::WFOVImage);
+          // Get the image from the camera library
+          NODELET_DEBUG("Starting a new grab from camera.");
+          pg_.grabImage(wfov_image->image, frame_id_);
+
+          // Set other values
+          wfov_image->header.frame_id = frame_id_;
+
+          wfov_image->gain = gain_;
+          wfov_image->white_balance_blue = wb_blue_;
+          wfov_image->white_balance_red = wb_red_;
+
+          wfov_image->temperature = pg_.getCameraTemperature();
+
+          ros::Time time = ros::Time::now();
+          wfov_image->header.stamp = time;
+          wfov_image->image.header.stamp = time;
+
+          // Set the CameraInfo message
+          ci_.reset(new sensor_msgs::CameraInfo(cinfo_->getCameraInfo()));
+          ci_->header.stamp = wfov_image->image.header.stamp;
+          ci_->header.frame_id = wfov_image->header.frame_id;
+          // The height, width, distortion model, and parameters are all filled in by camera info manager.
+          ci_->binning_x = binning_x_;
+          ci_->binning_y = binning_y_;
+          ci_->roi.x_offset = roi_x_offset_;
+          ci_->roi.y_offset = roi_y_offset_;
+          ci_->roi.height = roi_height_;
+          ci_->roi.width = roi_width_;
+          ci_->roi.do_rectify = do_rectify_;
+
+          wfov_image->info = *ci_;
+
+          // Publish the full message
+          pub_->publish(wfov_image);
+
+          // Publish the message using standard image transport
+          if (it_pub_.getNumSubscribers() > 0)
+          {
+            sensor_msgs::ImagePtr image(new sensor_msgs::Image(wfov_image->image));
+            it_pub_.publish(image, ci_);
+          }
+        }
+        catch (CameraTimeoutException &e)
+        {
+          NODELET_WARN("%s", e.what());
+        }
+        catch (CameraImageConsistencyError &e)
+        {
+          NODELET_WARN("%s", e.what());
+        }
+        catch (std::runtime_error &e)
+        {
+          NODELET_ERROR("%s", e.what());
+
+          state = ERROR;
+        }
+
+        break;
+      default:
+        NODELET_ERROR("Unknown camera state %d!", state);
       }
 
       // Update diagnostics
@@ -556,18 +554,18 @@ private:
       wb_red_ = msg.white_balance_red;
       pg_.setBRWhiteBalance(false, wb_blue_, wb_red_);
     }
-    catch(std::runtime_error& e)
+    catch (std::runtime_error &e)
     {
       NODELET_ERROR("gainWBCallback failed with error: %s", e.what());
     }
   }
 
-  boost::shared_ptr<dynamic_reconfigure::Server<pointgrey_camera_driver::PointGreyConfig> > srv_; ///< Needed to initialize and keep the dynamic_reconfigure::Server in scope.
-  boost::shared_ptr<image_transport::ImageTransport> it_; ///< Needed to initialize and keep the ImageTransport in scope.
-  boost::shared_ptr<camera_info_manager::CameraInfoManager> cinfo_; ///< Needed to initialize and keep the CameraInfoManager in scope.
-  image_transport::CameraPublisher it_pub_; ///< CameraInfoManager ROS publisher
-  boost::shared_ptr<diagnostic_updater::DiagnosedPublisher<wfov_camera_msgs::WFOVImage> > pub_; ///< Diagnosed publisher, has to be a pointer because of constructor requirements
-  ros::Subscriber sub_; ///< Subscriber for gain and white balance changes.
+  boost::shared_ptr<dynamic_reconfigure::Server<pointgrey_camera_driver::PointGreyConfig>> srv_; ///< Needed to initialize and keep the dynamic_reconfigure::Server in scope.
+  boost::shared_ptr<image_transport::ImageTransport> it_;                                        ///< Needed to initialize and keep the ImageTransport in scope.
+  boost::shared_ptr<camera_info_manager::CameraInfoManager> cinfo_;                              ///< Needed to initialize and keep the CameraInfoManager in scope.
+  image_transport::CameraPublisher it_pub_;                                                      ///< CameraInfoManager ROS publisher
+  boost::shared_ptr<diagnostic_updater::DiagnosedPublisher<wfov_camera_msgs::WFOVImage>> pub_;   ///< Diagnosed publisher, has to be a pointer because of constructor requirements
+  ros::Subscriber sub_;                                                                          ///< Subscriber for gain and white balance changes.
 
   boost::mutex connect_mutex_;
 
@@ -575,9 +573,9 @@ private:
   double min_freq_;
   double max_freq_;
 
-  PointGreyCamera pg_; ///< Instance of the PointGreyCamera library, used to interface with the hardware.
-  sensor_msgs::CameraInfoPtr ci_; ///< Camera Info message.
-  std::string frame_id_; ///< Frame id for the camera messages, defaults to 'camera'
+  PointGreyCamera pg_;                         ///< Instance of the PointGreyCamera library, used to interface with the hardware.
+  sensor_msgs::CameraInfoPtr ci_;              ///< Camera Info message.
+  std::string frame_id_;                       ///< Frame id for the camera messages, defaults to 'camera'
   boost::shared_ptr<boost::thread> pubThread_; ///< The thread that reads and publishes the images.
 
   double gain_;
@@ -585,13 +583,13 @@ private:
   uint16_t wb_red_;
 
   // Parameters for cameraInfo
-  size_t binning_x_; ///< Camera Info pixel binning along the image x axis.
-  size_t binning_y_; ///< Camera Info pixel binning along the image y axis.
+  size_t binning_x_;    ///< Camera Info pixel binning along the image x axis.
+  size_t binning_y_;    ///< Camera Info pixel binning along the image y axis.
   size_t roi_x_offset_; ///< Camera Info ROI x offset
   size_t roi_y_offset_; ///< Camera Info ROI y offset
-  size_t roi_height_; ///< Camera Info ROI height
-  size_t roi_width_; ///< Camera Info ROI width
-  bool do_rectify_; ///< Whether or not to rectify as if part of an image.  Set to false if whole image, and true if in ROI mode.
+  size_t roi_height_;   ///< Camera Info ROI height
+  size_t roi_width_;    ///< Camera Info ROI width
+  bool do_rectify_;     ///< Whether or not to rectify as if part of an image.  Set to false if whole image, and true if in ROI mode.
 
   // For GigE cameras:
   /// If true, GigE packet size is automatically determined, otherwise packet_size_ is used:
@@ -600,10 +598,11 @@ private:
   int packet_size_;
   /// GigE packet delay:
   int packet_delay_;
-
+  /// If true, GigE packet resend is enabled:
+  bool packet_resend_;
   /// Configuration:
   pointgrey_camera_driver::PointGreyConfig config_;
 };
 
-PLUGINLIB_EXPORT_CLASS(pointgrey_camera_driver::PointGreyCameraNodelet, nodelet::Nodelet)  // Needed for Nodelet declaration
-}
+PLUGINLIB_EXPORT_CLASS(pointgrey_camera_driver::PointGreyCameraNodelet, nodelet::Nodelet) // Needed for Nodelet declaration
+} // namespace pointgrey_camera_driver
